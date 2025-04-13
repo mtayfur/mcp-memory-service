@@ -21,4 +21,4 @@ ENV MCP_MEMORY_CHROMA_PATH=/app/chroma_db/current \
     PYTHONIOENCODING=utf-8 \
     PYTHONDONTWRITEBYTECODE=1
 
-CMD ["mcpo", "--port", "8000", "--name", "MCP Memory", "--description", "MCP Memory Service", "--", "uv", "run", "memory"]
+CMD ["mcpo", "--port", "8000", "--name", "Memory Service", "--", "uv", "run", "memory"]
