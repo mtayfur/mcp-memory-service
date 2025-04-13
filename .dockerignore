@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.git/
+.github/
+.vscode/
+.idea/
+.pytest_cache/
+.coverage
+htmlcov/
+*.md
+Dockerfile*
+docker-compose*
+
+!README.md
+!setup.py
+!pyproject.toml

@@ -137,8 +137,8 @@ except Exception as e:
     sys.exit(1)
 
 # Server settings
-SERVER_NAME = "memory"
-SERVER_VERSION = "0.2.0"
+SERVER_NAME = "Memory Service"
+SERVER_VERSION = "0.0.1"
 
 # ChromaDB settings
 CHROMA_SETTINGS = {
