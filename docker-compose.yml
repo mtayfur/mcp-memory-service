@@ -1,28 +1,112 @@
+name: llm
+
 services:
-  memory-service:
-    image: python:3.10-slim
-    working_dir: /app
+  openui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: openui
     ports:
-      - "8000:8000"
-    volumes:
-      - .:/app
-      - ${CHROMA_DB_PATH:-$HOME/mcp-memory/chroma_db}:/app/chroma_db
-      - ${BACKUPS_PATH:-$HOME/mcp-memory/backups}:/app/backups
+      - "${OPENUI_PORT}:8080"
     environment:
-      - MCP_MEMORY_CHROMA_PATH=/app/chroma_db
-      - MCP_MEMORY_BACKUPS_PATH=/app/backups
-      - LOG_LEVEL=INFO
-      - MAX_RESULTS_PER_QUERY=10
-      - SIMILARITY_THRESHOLD=0.7
-      - PYTHONPATH=/app
-      - PYTHONUNBUFFERED=1
+      SAFE_MODE: "${OPENUI_SAFE_MODE}"
+      ENV: "${OPENUI_ENV}"
+      GLOBAL_LOG_LEVEL: "${OPENUI_GLOBAL_LOG_LEVEL}"
+      WEBUI_URL: "${OPENUI_WEBUI_URL}"
+      DATABASE_URL: "${DATABASE_URL}"
+      ENABLE_ADMIN_CHAT_ACCESS: "${OPENUI_ENABLE_ADMIN_CHAT_ACCESS}"
+      ENABLE_ADMIN_EXPORT: "${OPENUI_ENABLE_ADMIN_EXPORT}"
+      ENABLE_AUTOCOMPLETE_GENERATION: "${OPENUI_ENABLE_AUTOCOMPLETE_GENERATION}"
+      ENABLE_EVALUATION_ARENA_MODELS: "${OPENUI_ENABLE_EVALUATION_ARENA_MODELS}"
+      CORS_ALLOW_ORIGIN: "${OPENUI_CORS_ALLOW_ORIGIN}"
+      AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST: "${OPENUI_AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST}"
     restart: unless-stopped
-    command: >
-      bash -c "
-        apt-get update && 
-        apt-get install -y --no-install-recommends build-essential gcc g++ &&
-        rm -rf /var/lib/apt/lists/* &&
-        pip install -e . &&
-        chmod a+rw /dev/stdin /dev/stdout /dev/stderr &&
-        python -u -m mcp_memory_service.server
-      "
+    depends_on:
+      postgres:
+        condition: service_healthy
+      tika:
+        condition: service_started
+    volumes:
+      - openui_data:/app/backend/data
+
+  tika:
+    image: apache/tika:latest
+    container_name: tika
+    ports:
+      - "${TIKA_PORT}:9998"
+    restart: unless-stopped
+
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    ports:
+      - "${SEARXNG_PORT}:8080"
+    volumes:
+      - ./.searxng:/etc/searxng:rw
+    env_file:
+      - .searxng.env
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+    logging:
+      options:
+        max-size: "${LOG_MAX_SIZE}"
+        max-file: "${LOG_MAX_FILE}"
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: postgres
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB: "${POSTGRES_DB}"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  memory-service:
+    container_name: memory-service
+    restart: unless-stopped
+    build:
+      context: ./repo/mcp-memory-service
+      args:
+        - BUILDKIT_INLINE_CACHE=${BUILDKIT_INLINE_CACHE}
+      cache_from:
+        - memory-service:latest
+    ports:
+      - "${MEMORY_SERVICE_PORT}:8000"
+    volumes:
+      - memory_chroma_data:/app/chroma_db
+      - memory_backups_data:/app/backups
+    environment:
+      - MCP_MEMORY_CHROMA_PATH=${MCP_MEMORY_CHROMA_PATH}
+      - MCP_MEMORY_BACKUPS_PATH=${MCP_MEMORY_BACKUPS_PATH}
+      - LOG_LEVEL=${LOG_LEVEL}
+      - MAX_RESULTS_PER_QUERY=${MAX_RESULTS_PER_QUERY}
+      - SIMILARITY_THRESHOLD=${SIMILARITY_THRESHOLD}
+      - PYTHONPATH=${PYTHONPATH}
+      - PYTHONUNBUFFERED=${PYTHONUNBUFFERED}
+      - UV_ACTIVE=${UV_ACTIVE}
+    depends_on:
+      - postgres
+    logging:
+      options:
+        max-size: "${LOG_MAX_SIZE}"
+        max-file: "${LOG_MAX_FILE}"     
+
+volumes:
+  openui_data:
+  postgres_data:
+  memory_chroma_data:
+  memory_backups_data:
+
