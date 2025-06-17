@@ -6,7 +6,7 @@ COPY requirements.txt .
 
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt && \
-    pip install mcpo uvx && \
+    pip install mcpo uv && \
     mkdir -p /app/chroma_db/current /app/chroma_db/backups && \
     rm -rf /root/.cache/pip
 
