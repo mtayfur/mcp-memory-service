@@ -78,25 +78,16 @@ services:
     container_name: memory-service
     restart: unless-stopped
     build:
-      context: ./repo/mcp-memory-service
-      args:
-        - BUILDKIT_INLINE_CACHE=${BUILDKIT_INLINE_CACHE}
-      cache_from:
-        - memory-service:latest
+      context: .
     ports:
       - "${MEMORY_SERVICE_PORT}:8000"
     volumes:
-      - memory_chroma_data:/app/chroma_db
-      - memory_backups_data:/app/backups
+      - memory_chroma_data:/app/chroma_db/current
+      - memory_backups_data:/app/chroma_db/backups
     environment:
-      - MCP_MEMORY_CHROMA_PATH=${MCP_MEMORY_CHROMA_PATH}
-      - MCP_MEMORY_BACKUPS_PATH=${MCP_MEMORY_BACKUPS_PATH}
       - LOG_LEVEL=${LOG_LEVEL}
       - MAX_RESULTS_PER_QUERY=${MAX_RESULTS_PER_QUERY}
       - SIMILARITY_THRESHOLD=${SIMILARITY_THRESHOLD}
-      - PYTHONPATH=${PYTHONPATH}
-      - PYTHONUNBUFFERED=${PYTHONUNBUFFERED}
-      - UV_ACTIVE=${UV_ACTIVE}
     depends_on:
       - postgres
     logging:

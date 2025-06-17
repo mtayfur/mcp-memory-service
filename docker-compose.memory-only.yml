@@ -1,0 +1,30 @@
+name: memory-service-only
+
+services:
+  memory-service:
+    container_name: memory-service
+    restart: unless-stopped
+    build:
+      context: .
+    ports:
+      - "${MEMORY_SERVICE_PORT:-8000}:8000"
+    volumes:
+      - memory_chroma_data:/app/chroma_db
+      - memory_backups_data:/app/backups
+    environment:
+      - MCP_MEMORY_CHROMA_PATH=${MCP_MEMORY_CHROMA_PATH:-/app/chroma_db}
+      - MCP_MEMORY_BACKUPS_PATH=${MCP_MEMORY_BACKUPS_PATH:-/app/backups}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - MAX_RESULTS_PER_QUERY=${MAX_RESULTS_PER_QUERY:-50}
+      - SIMILARITY_THRESHOLD=${SIMILARITY_THRESHOLD:-0.7}
+      - PYTHONPATH=${PYTHONPATH:-/app}
+      - PYTHONUNBUFFERED=${PYTHONUNBUFFERED:-1}
+      - UV_ACTIVE=${UV_ACTIVE:-true}
+    logging:
+      options:
+        max-size: "${LOG_MAX_SIZE:-10m}"
+        max-file: "${LOG_MAX_FILE:-3}"
+
+volumes:
+  memory_chroma_data:
+  memory_backups_data:
