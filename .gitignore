@@ -1,4 +1,7 @@
-# Python bytecode & artifacts
+# Aider files
+.aider.*
+
+# Python
 __pycache__/
 *.py[cod]
 *$py.class

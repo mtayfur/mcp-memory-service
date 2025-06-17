@@ -197,6 +197,16 @@ class ChromaMemoryStorage(MemoryStorage):
         # Return JSON string representation of the array
         return json.dumps(tags)
 
+    @staticmethod
+    def normalize_timestamp(ts) -> float:
+        """Convert datetime or float-like timestamp into float seconds."""
+        if isinstance(ts, datetime):
+            return time.mktime(ts.timetuple())
+        if isinstance(ts, (float, int)):
+            return float(ts)
+        logger.error(f"Invalid timestamp type: {type(ts)}")
+        return time.time()
+    
     async def store(self, memory: Memory) -> Tuple[bool, str]:
         """Store a memory with proper embedding handling."""
         try:
@@ -259,11 +269,25 @@ class ChromaMemoryStorage(MemoryStorage):
                     search_tags = [str(tag).strip() for tag in tags if str(tag).strip()]
                     
                     if any(search_tag in stored_tags for search_tag in search_tags):
+                        # Use stored timestamps or fall back to legacy timestamp field
+                        created_at = memory_meta.get("created_at") or memory_meta.get("timestamp_float") or memory_meta.get("timestamp")
+                        created_at_iso = memory_meta.get("created_at_iso") or memory_meta.get("timestamp_str")
+                        updated_at = memory_meta.get("updated_at") or created_at
+                        updated_at_iso = memory_meta.get("updated_at_iso") or created_at_iso
+                        
                         memory = Memory(
                             content=doc,
                             content_hash=memory_meta["content_hash"],
                             tags=stored_tags,
-                            memory_type=memory_meta.get("type")
+                            memory_type=memory_meta.get("type"),
+                            # Restore timestamps with fallback logic
+                            created_at=created_at,
+                            created_at_iso=created_at_iso,
+                            updated_at=updated_at,
+                            updated_at_iso=updated_at_iso,
+                            # Include additional metadata
+                            metadata={k: v for k, v in memory_meta.items() 
+                                     if k not in ["content_hash", "tags", "type", "created_at", "created_at_iso", "updated_at", "updated_at_iso", "timestamp", "timestamp_float", "timestamp_str"]}
                         )
                         memories.append(memory)
             
@@ -273,15 +297,35 @@ class ChromaMemoryStorage(MemoryStorage):
             logger.error(f"Error searching by tags: {e}")
             return []
 
-    async def delete_by_tag(self, tag: str) -> Tuple[int, str]:
-        """Deletes memories that match the specified tag."""
+    async def delete_by_tag(self, tag_or_tags) -> Tuple[int, str]:
+        """
+        Enhanced delete_by_tag that accepts both single tag (string) and multiple tags (list).
+        This fixes Issue 5: Delete Tag Function Ambiguity by supporting both formats.
+        
+        Args:
+            tag_or_tags: Either a single tag (string) or multiple tags (list of strings)
+            
+        Returns:
+            Tuple of (count_deleted, message)
+        """
         try:
-            # Get all the documents from ChromaDB
-            results = self.collection.get(
-                include=["metadatas"]
-            )
-
+            # Normalize input to list of tags
+            if isinstance(tag_or_tags, str):
+                tags_to_delete = [tag_or_tags.strip()]
+            elif isinstance(tag_or_tags, list):
+                tags_to_delete = [str(tag).strip() for tag in tag_or_tags if str(tag).strip()]
+            else:
+                return 0, f"Invalid tag format. Expected string or list, got {type(tag_or_tags)}"
+            
+            if not tags_to_delete:
+                return 0, "No valid tags provided"
+            
+            # Get all documents from ChromaDB
+            results = self.collection.get(include=["metadatas"])
+            
             ids_to_delete = []
+            matched_tags = set()
+            
             if results["ids"]:
                 for i, meta in enumerate(results["metadatas"]):
                     try:
@@ -289,21 +333,98 @@ class ChromaMemoryStorage(MemoryStorage):
                         retrieved_tags = json.loads(retrieved_tags_string)
                     except json.JSONDecodeError:
                         retrieved_tags = []
-
-                    if tag in retrieved_tags:
-                        ids_to_delete.append(results["ids"][i])
-
+                    
+                    # Check if any of the tags to delete are in this memory's tags
+                    for tag_to_delete in tags_to_delete:
+                        if tag_to_delete in retrieved_tags:
+                            ids_to_delete.append(results["ids"][i])
+                            matched_tags.add(tag_to_delete)
+                            break  # No need to check other tags for this memory
+            
             if not ids_to_delete:
-                return 0, f"No memories found with tag: {tag}"
-
+                tags_str = ", ".join(tags_to_delete)
+                return 0, f"No memories found with tag(s): {tags_str}"
+            
             # Delete memories
             self.collection.delete(ids=ids_to_delete)
-
-            return len(ids_to_delete), f"Successfully deleted {len(ids_to_delete)} memories with tag: {tag}"
-
+            
+            # Create informative message
+            matched_tags_str = ", ".join(sorted(matched_tags))
+            if len(tags_to_delete) == 1:
+                message = f"Successfully deleted {len(ids_to_delete)} memories with tag: {matched_tags_str}"
+            else:
+                message = f"Successfully deleted {len(ids_to_delete)} memories with tag(s): {matched_tags_str}"
+            
+            return len(ids_to_delete), message
+            
         except Exception as e:
-            logger.error(f"Error deleting memories by tag: {e}")
-            return 0, f"Error deleting memories by tag: {e}"
+            logger.error(f"Error deleting memories by tag(s): {e}")
+            return 0, f"Error deleting memories by tag(s): {e}"
+
+    async def delete_by_tags(self, tags: List[str]) -> Tuple[int, str]:
+        """
+        Explicitly delete memories by multiple tags (for clarity and API consistency).
+        This is an alias for delete_by_tag with list input.
+        
+        Args:
+            tags: List of tag strings to delete
+            
+        Returns:
+            Tuple of (count_deleted, message)
+        """
+        return await self.delete_by_tag(tags)
+
+    async def delete_by_all_tags(self, tags: List[str]) -> Tuple[int, str]:
+        """
+        Delete memories that contain ALL of the specified tags.
+        
+        Args:
+            tags: List of tags - memories must contain ALL of these tags to be deleted
+            
+        Returns:
+            Tuple of (count_deleted, message)
+        """
+        try:
+            if not tags:
+                return 0, "No tags provided"
+            
+            # Normalize tags
+            tags_to_match = [str(tag).strip() for tag in tags if str(tag).strip()]
+            if not tags_to_match:
+                return 0, "No valid tags provided"
+            
+            # Get all documents from ChromaDB
+            results = self.collection.get(include=["metadatas"])
+            
+            ids_to_delete = []
+            
+            if results["ids"]:
+                for i, meta in enumerate(results["metadatas"]):
+                    try:
+                        retrieved_tags_string = meta.get("tags", "[]")
+                        retrieved_tags = json.loads(retrieved_tags_string)
+                    except json.JSONDecodeError:
+                        retrieved_tags = []
+                    
+                    # Check if ALL tags are present in this memory
+                    if all(tag in retrieved_tags for tag in tags_to_match):
+                        ids_to_delete.append(results["ids"][i])
+            
+            if not ids_to_delete:
+                tags_str = ", ".join(tags_to_match)
+                return 0, f"No memories found containing ALL tags: {tags_str}"
+            
+            # Delete memories
+            self.collection.delete(ids=ids_to_delete)
+            
+            tags_str = ", ".join(tags_to_match)
+            message = f"Successfully deleted {len(ids_to_delete)} memories containing ALL tags: {tags_str}"
+            
+            return len(ids_to_delete), message
+            
+        except Exception as e:
+            logger.error(f"Error deleting memories by all tags: {e}")
+            return 0, f"Error deleting memories by all tags: {e}"
       
     async def delete(self, content_hash: str) -> Tuple[bool, str]:
         """Delete a memory by its hash."""
@@ -387,15 +508,20 @@ class ChromaMemoryStorage(MemoryStorage):
             if start_timestamp is not None or end_timestamp is not None:
                 where_clause = {"$and": []}
                 
-                if start_timestamp is not None:
-                    where_clause["$and"].append({"timestamp": {"$gte": float(start_timestamp)}})
-                
-                if end_timestamp is not None:
-                    where_clause["$and"].append({"timestamp": {"$lte": float(end_timestamp)}})
+            if start_timestamp is not None:
+                start_timestamp = self.normalize_timestamp(start_timestamp)
+                where_clause["$and"].append({"timestamp": {"$gte": int(start_timestamp)}})
+
+            if end_timestamp is not None:
+                end_timestamp = self.normalize_timestamp(end_timestamp)
+                where_clause["$and"].append({"timestamp": {"$lte": int(end_timestamp)}})
 
             # If there's no valid where clause, set it to None to avoid ChromaDB errors
             if not where_clause.get("$and", []):
                 where_clause = None
+                
+            # Log the where clause for debugging
+            logger.info(f"Time filtering where clause: {where_clause}")
                 
             # Determine whether to use semantic search or just time-based filtering
             if query:
@@ -421,16 +547,26 @@ class ChromaMemoryStorage(MemoryStorage):
                         except json.JSONDecodeError:
                             tags = []
                         
-                        # Reconstruct memory object
-                        timestamp = float(metadata.get("timestamp", time.time()))
+                        # Reconstruct memory object with proper timestamp handling
+                        # Use stored timestamps or fall back to legacy timestamp field
+                        created_at = metadata.get("created_at") or metadata.get("timestamp_float") or metadata.get("timestamp")
+                        created_at_iso = metadata.get("created_at_iso") or metadata.get("timestamp_str")
+                        updated_at = metadata.get("updated_at") or created_at
+                        updated_at_iso = metadata.get("updated_at_iso") or created_at_iso
+                        
                         memory = Memory(
                             content=results["documents"][0][i],
                             content_hash=metadata["content_hash"],
                             tags=tags,
                             memory_type=metadata.get("memory_type", ""),
-                            timestamp=timestamp,
+                            # Restore timestamps with fallback logic
+                            created_at=created_at,
+                            created_at_iso=created_at_iso,
+                            updated_at=updated_at,
+                            updated_at_iso=updated_at_iso,
+                            # Include additional metadata
                             metadata={k: v for k, v in metadata.items() 
-                                    if k not in ["content_hash", "tags", "memory_type", "timestamp"]}
+                                    if k not in ["content_hash", "tags", "memory_type", "created_at", "created_at_iso", "updated_at", "updated_at_iso", "timestamp", "timestamp_float", "timestamp_str"]}
                         )
                         
                         # Calculate cosine similarity from distance
@@ -462,20 +598,26 @@ class ChromaMemoryStorage(MemoryStorage):
                 except json.JSONDecodeError:
                     retrieved_tags = []
                 
-                # Ensure timestamp is a float
-                try:
-                    timestamp = float(metadata.get("timestamp", time.time()))
-                except (ValueError, TypeError):
-                    timestamp = time.time()
-
+                # Reconstruct memory object with proper timestamp handling
+                # Use stored timestamps or fall back to legacy timestamp field
+                created_at = metadata.get("created_at") or metadata.get("timestamp_float") or metadata.get("timestamp")
+                created_at_iso = metadata.get("created_at_iso") or metadata.get("timestamp_str")
+                updated_at = metadata.get("updated_at") or created_at
+                updated_at_iso = metadata.get("updated_at_iso") or created_at_iso
+                
                 memory = Memory(
                     content=results["documents"][i],
                     content_hash=metadata["content_hash"],
                     tags=retrieved_tags,
                     memory_type=metadata.get("type", ""),
-                    timestamp=timestamp,
+                    # Restore timestamps with fallback logic
+                    created_at=created_at,
+                    created_at_iso=created_at_iso,
+                    updated_at=updated_at,
+                    updated_at_iso=updated_at_iso,
+                    # Include additional metadata
                     metadata={k: v for k, v in metadata.items() 
-                             if k not in ["type", "content_hash", "tags", "timestamp"]}
+                             if k not in ["type", "content_hash", "tags", "created_at", "created_at_iso", "updated_at", "updated_at_iso", "timestamp", "timestamp_float", "timestamp_str"]}
                 )
                 # For time-based retrieval, we don't have a relevance score
                 memory_results.append(MemoryQueryResult(memory=memory, relevance_score=None))
@@ -562,12 +704,32 @@ class ChromaMemoryStorage(MemoryStorage):
 
 
     def _format_metadata_for_chroma(self, memory: Memory) -> Dict[str, Any]:
-        """Format metadata to be compatible with ChromaDB requirements."""
+        """Format metadata to be compatible with ChromaDB requirements with multi-format timestamps."""
+        # Ensure timestamps are properly synchronized
+        memory._sync_timestamps(
+            created_at=memory.created_at,
+            created_at_iso=memory.created_at_iso,
+            updated_at=memory.updated_at,
+            updated_at_iso=memory.updated_at_iso
+        )
+        
+        # Use both new timestamp fields and legacy timestamp fields for compatibility
         metadata = {
             "content_hash": memory.content_hash,
             "memory_type": memory.memory_type if memory.memory_type else "",
-            "timestamp": str(memory.timestamp.timestamp())
+            # Store legacy timestamp in all formats for backward compatibility
+            "timestamp": int(memory.created_at),
+            "timestamp_float": memory.created_at,
+            "timestamp_str": memory.created_at_iso,
+            # Store new timestamp fields
+            "created_at": memory.created_at,
+            "created_at_iso": memory.created_at_iso,
+            "updated_at": memory.updated_at,
+            "updated_at_iso": memory.updated_at_iso
         }
+        
+        # Log the timestamps for debugging
+        logger.debug(f"Storing memory with multi-format timestamps: created_at={memory.created_at}, created_at_iso='{memory.created_at_iso}', updated_at={memory.updated_at}, updated_at_iso='{memory.updated_at_iso}'")
         
         # Properly serialize tags
         if memory.tags:
@@ -657,12 +819,26 @@ class ChromaMemoryStorage(MemoryStorage):
                     except (json.JSONDecodeError, TypeError):
                         logger.debug(f"Could not parse tags for memory {metadata.get('content_hash')}")
                 
-                # Reconstruct memory object
+                # Reconstruct memory object with proper timestamp handling
+                # Use stored timestamps or fall back to legacy timestamp field
+                created_at = metadata.get("created_at") or metadata.get("timestamp_float") or metadata.get("timestamp")
+                created_at_iso = metadata.get("created_at_iso") or metadata.get("timestamp_str")
+                updated_at = metadata.get("updated_at") or created_at
+                updated_at_iso = metadata.get("updated_at_iso") or created_at_iso
+                
                 memory = Memory(
                     content=results["documents"][0][i],
                     content_hash=metadata["content_hash"],
                     tags=tags,
                     memory_type=metadata.get("memory_type", ""),
+                    # Restore timestamps with fallback logic
+                    created_at=created_at,
+                    created_at_iso=created_at_iso,
+                    updated_at=updated_at,
+                    updated_at_iso=updated_at_iso,
+                    # Include additional metadata
+                    metadata={k: v for k, v in metadata.items() 
+                             if k not in ["content_hash", "tags", "memory_type", "created_at", "created_at_iso", "updated_at", "updated_at_iso", "timestamp", "timestamp_float", "timestamp_str"]}
                 )
                 
                 # Calculate cosine similarity from distance
